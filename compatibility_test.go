@@ -26,6 +26,7 @@ func TestFormatCompatibility(t *testing.T) {
 	// both the format guard and the verifier during migration.
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			isolateSemaphore(t)
 			if err := Validate(tc.hash); err != nil {
 				t.Fatal(err)
 			}

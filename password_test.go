@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -13,20 +14,16 @@ var cheapParams = Params{Memory: 64, Time: 1, Parallelism: 1, SaltLength: 16, Ke
 
 func TestHashAndRehash(t *testing.T) {
 	t.Cleanup(SetParamsForTesting(cheapParams))
-	ctx := t.Context()
+	isolateSemaphore(t)
 
 	// The library doesn't apply a policy, even to an empty password.
-	hash, err := Hash(ctx, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	hash := assertHash(t, "")
 	if !strings.HasPrefix(hash, "$argon2id$v=19$m=64,t=1,p=1$") {
 		t.Fatalf("unexpected PHC string: %q", hash)
 	}
 	// Different accounts using the same password must not get the same hash.
-	second, err := Hash(ctx, "")
-	if err != nil || second == hash {
-		t.Fatalf("second Hash = %q, %v; want a different salt", second, err)
+	if second := assertHash(t, ""); second == hash {
+		t.Fatalf("second Hash = %q; want a different salt", second)
 	}
 	assertCheck(t, hash, "", true, false)
 	assertCheck(t, hash, "wrong", false, false)
@@ -40,10 +37,8 @@ func TestHashAndRehash(t *testing.T) {
 }
 
 func TestDefaultHash(t *testing.T) {
-	hash, err := Hash(t.Context(), "test password")
-	if err != nil {
-		t.Fatal(err)
-	}
+	isolateSemaphore(t)
+	hash := assertHash(t, "test password")
 	h, err := parse(hash)
 	if err != nil || h.params != (Params{65536, 3, 4, 16, 32}) {
 		t.Fatalf("default params = %+v, %v", h.params, err)
@@ -55,6 +50,7 @@ func TestBcryptRehash(t *testing.T) {
 	hash := makeBcrypt(t, "test password")
 	for _, minor := range []string{"a", "b", "y"} {
 		t.Run(minor, func(t *testing.T) {
+			isolateSemaphore(t)
 			legacy := "$2" + minor + hash[3:]
 			if err := Validate(legacy); err != nil {
 				t.Fatal(err)
@@ -135,9 +131,40 @@ func checkFormatRejection(t *testing.T, hash string) {
 
 func assertCheck(t *testing.T, hash, pw string, wantOK, wantRehash bool) {
 	t.Helper()
-	if ok, rehash, err := Check(t.Context(), hash, pw); err != nil || ok != wantOK || rehash != wantRehash {
+	ctx, cancel := hashingTestContext(t)
+	defer cancel()
+	if ok, rehash, err := Check(ctx, hash, pw); err != nil || ok != wantOK || rehash != wantRehash {
 		t.Fatalf("Check = (%t, %t, %v), want (%t, %t, nil)", ok, rehash, err, wantOK, wantRehash)
 	}
+	assertEmptySlots(t, currentSlots(), "Check")
+}
+
+func assertHash(t *testing.T, pw string) string {
+	t.Helper()
+	ctx, cancel := hashingTestContext(t)
+	defer cancel()
+	hash, err := Hash(ctx, pw)
+	if err != nil {
+		t.Fatalf("Hash: %v", err)
+	}
+	assertEmptySlots(t, currentSlots(), "Hash")
+	return hash
+}
+
+func hashingTestContext(t *testing.T) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(t.Context(), 10*time.Second)
+}
+
+// Isolate occupied slots so a failed test cannot affect the next test.
+// Only nonparallel tests with no work in flight can replace the semaphore.
+func isolateSemaphore(t *testing.T) {
+	saved := currentSlots()
+	SetConcurrency(cap(saved))
+	t.Cleanup(func() {
+		slotsMu.Lock()
+		slots = saved
+		slotsMu.Unlock()
+	})
 }
 
 func makeBcrypt(t *testing.T, pw string) string {

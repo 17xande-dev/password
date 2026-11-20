@@ -10,9 +10,12 @@ import (
 
 func TestSemaphoreCapsHashAndChecks(t *testing.T) {
 	t.Cleanup(SetParamsForTesting(cheapParams))
-	savedSlots, savedDerive := slots, deriveKey
-	t.Cleanup(func() { slots, deriveKey = savedSlots, savedDerive })
-	hash, err := Hash(t.Context(), "pw")
+	isolateSemaphore(t)
+	savedDerive := deriveKey
+	t.Cleanup(func() { deriveKey = savedDerive })
+	ctx, cancel := hashingTestContext(t)
+	defer cancel()
+	hash, err := Hash(ctx, "pw")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,18 +99,21 @@ func TestSemaphoreCapsHashAndChecks(t *testing.T) {
 		// Check occupancy before the next call so a lost token is a test
 		// failure, not a blocked caller waiting on a permanently full queue.
 		for _, call := range calls {
-			if err := call.run(t.Context()); err != nil {
+			ctx, cancel := hashingTestContext(t)
+			err := call.run(ctx)
+			cancel()
+			if err != nil {
 				t.Fatalf("%s with a free slot: %v", call.name, err)
 			}
 			assertEmptySlots(t, s, call.name)
 		}
 		for _, call := range []struct {
 			name string
-			run  func()
+			run  func(context.Context)
 		}{
-			{"Hash", func() { _, _ = Hash(t.Context(), "panic") }},
-			{"Check Argon2id", func() { _, _, _ = Check(t.Context(), hash, "panic") }},
-			{"CheckDummy", func() { _, _ = CheckDummy(t.Context(), "panic") }},
+			{"Hash", func(ctx context.Context) { _, _ = Hash(ctx, "panic") }},
+			{"Check Argon2id", func(ctx context.Context) { _, _, _ = Check(ctx, hash, "panic") }},
+			{"CheckDummy", func(ctx context.Context) { _, _ = CheckDummy(ctx, "panic") }},
 		} {
 			func() {
 				defer func() {
@@ -116,7 +122,9 @@ func TestSemaphoreCapsHashAndChecks(t *testing.T) {
 					}
 					assertEmptySlots(t, s, call.name+" after panic")
 				}()
-				call.run()
+				ctx, cancel := hashingTestContext(t)
+				defer cancel()
+				call.run(ctx)
 			}()
 		}
 	})
@@ -188,6 +196,7 @@ func TestSemaphoreDeadline(t *testing.T) {
 
 func TestDummySpendsOneDerivationAndNeverMatches(t *testing.T) {
 	t.Cleanup(SetParamsForTesting(cheapParams))
+	isolateSemaphore(t)
 	saved := deriveKey
 	t.Cleanup(func() { deriveKey = saved })
 	calls := 0
@@ -200,7 +209,10 @@ func TestDummySpendsOneDerivationAndNeverMatches(t *testing.T) {
 		// Even an exact hash match cannot authenticate a nonexistent account.
 		return make([]byte, keyLen)
 	}
-	if ok, err := CheckDummy(t.Context(), "pw"); ok || err != nil || calls != 1 {
+	ctx, cancel := hashingTestContext(t)
+	defer cancel()
+	if ok, err := CheckDummy(ctx, "pw"); ok || err != nil || calls != 1 {
 		t.Fatalf("CheckDummy = (%t, %v), %d derivations; want (false, nil) and one derivation", ok, err, calls)
 	}
+	assertEmptySlots(t, currentSlots(), "CheckDummy")
 }

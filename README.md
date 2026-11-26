@@ -51,3 +51,7 @@ with `t.Cleanup(password.SetParamsForTesting(p))`.
 Password length rules, user-facing messages, and when to upgrade a hash stay
 with the app. Sharing a storage format and a process resource limit does not
 require apps to share account policy.
+
+## License
+
+This module is licensed under the [MIT No Attribution license](LICENSE).
